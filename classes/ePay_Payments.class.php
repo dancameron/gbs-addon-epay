@@ -7,33 +7,27 @@
  */
 
 class ePay_Payments extends Group_Buying_Offsite_Processors {
-	// mode
-	const IS_DEMO_MODE = 'gb_epay_demo_mode';
+	const API_URL = 'https://ssl.ditonlinebetalingssystem.dk/remote/payment.asmx?WSDL';
 	// credentials
-	const API_USERNAME_OPTION = 'gb_epay_api_username';
+	const MERCHANT_ID_OPTION = 'gb_epay_merchant_id';
 	const API_PASSWORD_OPTION = 'gb_epay_api_password';
-	const ACCOUNT_ID = 'gb_epay_sid';
-	const SECRET_WORD = 'gb_epay_secret_word';
 	// token
 	const TOKEN_KEY = 'gb_token_key'; // Combine with $blog_id to get the actual meta key
 	// options
 	const CANCEL_URL_OPTION = 'gb_epay_cancel_url';
-	const RETURN_URL_OPTION = 'gb_epay_redirect_url';
+	const ACCEPT_URL_OPTION = 'gb_epay_acceptreturn_url';
 	const CURRENCY_CODE_OPTION = 'gb_epay_ap_currency';
 	// gbs
 	const PAYMENT_METHOD = 'ePay';
 	// vars
 	protected static $instance;
-	
-	protected static $api_mode = '';
-	private static $api_username;
+
+	private static $merchant_id;
 	private static $api_password;
-	private static $account_id;
-	private static $secret_word;
-	
+
 	private static $cancel_url = '';
-	private static $return_url = '';
-	private static $currency_code = 'USD';
+	private static $accept_url = '';
+	private static $currency_code = 'DKK';
 
 	/**
 	 * instance
@@ -73,15 +67,12 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 	protected function __construct() {
 		parent::__construct();
 		// variables
-		self::$api_mode = get_option( self::IS_DEMO_MODE, '');
-		self::$api_username = get_option( self::API_USERNAME_OPTION );
+		self::$merchant_id = get_option( self::MERCHANT_ID_OPTION );
 		self::$api_password = get_option( self::API_PASSWORD_OPTION );
-		self::$account_id = get_option( self::ACCOUNT_ID );
-		self::$secret_word = get_option( self::SECRET_WORD, 'tango' );
-		
+
 		self::$cancel_url = get_option( self::CANCEL_URL_OPTION, Group_Buying_Carts::get_url() );
-		self::$return_url = get_option( self::RETURN_URL_OPTION, add_query_arg( array( 'gb_checkout_action' => 'back_from_epay' ), Group_Buying_Checkouts::get_url() ) );
-		self::$currency_code = get_option( self::CURRENCY_CODE_OPTION, 'USD' );
+		self::$accept_url = get_option( self::ACCEPT_URL_OPTION, add_query_arg( array( 'gb_checkout_action' => 'back_from_epay' ), Group_Buying_Checkouts::get_url() ) );
+		self::$currency_code = get_option( self::CURRENCY_CODE_OPTION, 'DKK' );
 
 		// payment options
 		add_action( 'admin_init', array( $this, 'register_settings' ), 10, 0 );
@@ -123,7 +114,7 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 
 	/**
 	 * Instead of redirecting to the GBS checkout page,
-	 * set up the Preapproval and redirect there
+	 * redirect.
 	 *
 	 * @param Group_Buying_Carts $cart
 	 * @return void
@@ -137,104 +128,39 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 		// Don't send someone returning away again.
 		if ( $_REQUEST['gb_checkout_action'] == Group_Buying_Checkouts::PAYMENT_PAGE ) {
 
-			// Build redirect url
-			$args = self::get_charge_args( $checkout );
-			if ( empty( $args ) ) {
-				self::set_message( 'Problem building ePay charge link.', self::MESSAGE_STATUS_ERROR );
-				$redirect_url = Group_Buying_Carts::get_url();
+			$filtered_total = self::get_payment_request_total( $checkout );
+			if ( $filtered_total < 0.01 ) {
+				return;
 			}
 
-			self::set_token( $args['gbs_custom_token'] ); // Set the token so we can reference the purchase later
-			
-			$redirect_url = Twocheckout_Charge::link( $args );
+			$reference_token = substr( md5( serialize( $cart->get_products() ) ) . get_current_user_id(), -18 );
+			self::set_token( $reference_token ); // Set the token so we can reference the purchase later
+
+			$item_array = array();
+			foreach ( $cart->get_products() as $item ) {
+				$item_array[] = get_the_title( $item['deal_id'] );
+			}
+			// memo
+			$description = self::__( 'Item(s): ' ) . implode( ', ', $item_array );
+			error_log( 'accept url' . print_r( self::$accept_url, TRUE ) );
+			$args = apply_filters( 'epay_payment_url_args', array(
+					'merchantnumber' => self::$merchant_id,
+					'currency' => self::$currency_code,
+					'windowstate' => 3,
+					'amount' => $filtered_total*100,
+					'orderid' => $reference_token,
+					'language' => apply_filters( 'epay_language', 1 ),
+					'accepturl' => self::$accept_url,
+					'cancelurl' => self::$cancel_url,
+					'ordertext' => urlencode( get_bloginfo( 'name' ) ),
+					'description' => urlencode( $description )
+				), $checkout, $cart );
+
+			$redirect_url = add_query_arg( $args, 'https://ssl.ditonlinebetalingssystem.dk/integration/ewindow/Default.aspx' );
 
 			wp_redirect( $redirect_url, 303 );
 			exit();
 		}
-	}
-
-	/**
-	 * Build the args from checkout
-	 * 
-	 * @param  Group_Buying_Checkouts $checkout
-	 * @return
-	 */
-	public static function get_charge_args( Group_Buying_Checkouts $checkout ) {
-		
-		$filtered_total = self::get_payment_request_total( $checkout );
-		if ( $filtered_total < 0.01 ) {
-			return array();
-		}
-
-		$i = 0;
-		$user = get_userdata( get_current_user_id() );
-
-		// Build args array
-		$args = array();
-		$args['sid'] = self::$account_id;
-		$args['cart_order_id'] = gb_get_name() . "'s " . self::__('Cart');
-		$args['total'] = gb_get_number_format( $filtered_total );
-		$args['currency_code'] = self::get_currency_code();
-		$args['x_receipt_link_url'] = self::$return_url;
-		$args['card_holder_name'] = $checkout->cache['billing']['first_name'] . ' ' . $checkout->cache['billing']['last_name'];
-		$args['street_address'] = $checkout->cache['billing']['street'];
-		$args['city'] = $checkout->cache['billing']['city'];
-		$args['state'] = $checkout->cache['billing']['zone'];
-		$args['zip'] = $checkout->cache['billing']['postal_code'];
-		$args['country'] = $checkout->cache['billing']['country'];
-		$args['email'] = $user->user_email;
-
-		if ( self::$api_mode == 'demo' ) {
-			$args['demo'] = 'Y';
-		}
-
-		// Custom args
-		$args['gbs_custom_user_id'] = get_current_user_id();
-		$args['gbs_custom_token'] = substr( md5( serialize( $args ) ), -60 );
-
-		// Shipping info
-		if ( isset( $checkout->cache['shipping'] ) ) {
-			$args['ship_name'] = $checkout->cache['shipping']['first_name'] . ' ' . $checkout->cache['shipping']['last_name'];
-			$args['ship_street_address'] = $checkout->cache['shipping']['street'];
-			$args['ship_city'] = $checkout->cache['shipping']['city'];
-			$args['ship_state'] = $checkout->cache['shipping']['zone'];
-			$args['ship_zip'] = $checkout->cache['shipping']['postal_code'];
-			$args['ship_country'] = $checkout->cache['shipping']['country'];
-		}
-
-		// Products
-		$cart = $checkout->get_cart();
-		foreach ( $cart->get_items() as $key => $item ) {
-			$deal = Group_Buying_Deal::get_instance( $item['deal_id'] );
-			$args['li_'.$i.'_product_id'] = $item['deal_id'];
-			$args['li_'.$i.'_name'] = html_entity_decode( strip_tags( $deal->get_title( $item['data'] ) ), ENT_QUOTES, 'UTF-8' );
-			$args['li_'.$i.'_quantity'] = $item['quantity'];
-			$args['li_'.$i.'_price'] = gb_get_number_format( $deal->get_price( NULL, $item['data'] ) );
-			$args['li_'.$i.'_tangible'] = 'Y';
-			$i++;
-		}
-		// Tax
-		if ( $cart->get_tax_total() ) {
-			$args['li_'.$i.'_type'] = 'tax';
-			$args['li_'.$i.'_name'] =  self::__('Tax');
-			$args['li_'.$i.'_quantity'] = 1;
-			$args['li_'.$i.'_price'] = gb_get_number_format( $cart->get_tax_total() );
-			$args['li_'.$i.'_tangible'] = 'N';
-			$i++;
-		}
-		// Shipping
-		if ( $cart->get_shipping_total() ) {
-			$args['li_'.$i.'_type'] = 'shipping';
-			$args['li_'.$i.'_name'] =  self::__('Shipping');
-			$args['li_'.$i.'_quantity'] = 1;
-			$args['li_'.$i.'_price'] = gb_get_number_format( $cart->get_shipping_total() );
-			$args['li_'.$i.'_tangible'] = 'Y';
-			$i++;
-		}
-
-		do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - ePay Args', $args );
-		return apply_filters( 'gb_epay_get_charge_args', $args );
-
 	}
 
 	/**
@@ -254,15 +180,10 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 	}
 
 	public static function validate_return() {
-		$params = array();
-		foreach ($_REQUEST as $k => $v) {
-			$params[$k] = $v;
+		if ( isset( $_REQUEST['txnid'] ) && $_REQUEST['txnid'] != '' ) {
+			return TRUE;
 		}
-		$passback = Twocheckout_Return::check( $params, self::$secret_word, 'array' );
-		if ( $passback['response_code'] !== 'Success' )
-			return FALSE;
-
-		return TRUE;
+		return FALSE;
 	}
 
 	////////////////////////////////////////////////////////
@@ -290,7 +211,7 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 
 		// Payment Data
 		$payment_data = array();
-		foreach ($_REQUEST as $k => $v) {
+		foreach ( $_REQUEST as $k => $v ) {
 			$payment_data[$k] = $v;
 		}
 
@@ -319,9 +240,10 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 		$payment_id = Group_Buying_Payment::new_payment( array(
 				'payment_method' => self::get_payment_method(),
 				'purchase' => $purchase->get_id(),
-				'amount' => $response['max_total_amount_of_all_payments'],
+				'amount' => $_REQUEST['amount'],
 				'data' => array(
-					'twoco_order_id' => $_REQUEST['order_number'],
+					'txnid' => $_REQUEST['txnid'],
+					'orderid' => $_REQUEST['orderid'],
 					'api_response' => $payment_data,
 					'uncaptured_deals' => $deal_info,
 					'token' => self::get_token()
@@ -390,18 +312,19 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 	public function capture_payment( Group_Buying_Payment $payment ) {
 		// is this the right payment processor? does the payment still need processing?
 		if ( $payment->get_payment_method() == self::get_payment_method() && $payment->get_status() != Group_Buying_Payment::STATUS_COMPLETE ) {
-			
+
 			$data = $payment->get_data();
-			if ( isset( $data['twoco_order_id'] ) && $data['twoco_order_id'] ) {
+			if ( isset( $data['txnid'] ) && $data['txnid'] ) {
 
 				// items we need to capture
 				$items_to_capture = $this->items_to_capture( $payment );
 				if ( $items_to_capture ) {
 
 					// Retrieve Payment
-					$response = self::get_payment( $data['twoco_order_id'] );
+					error_log( 'data' . print_r( $data, TRUE ) );
+					$response = self::api_capture( $data['txnid'], $data['api_response']['amount'] );
 
-					if ( $response['response_code'] != 'OK' )
+					if ( !$response )
 						return FALSE;
 
 					// if not set create an array
@@ -423,24 +346,68 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 	}
 
 
-	private function get_payment( $epay_order_id ) {
-		Twocheckout::setCredentials( self::$api_username, self::$api_password );
-		$args = array(
-			'sale_id' => $epay_order_id
-		);
-		try {
-			$response = Twocheckout_Sale::retrieve( $args, 'array' );
-			do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - ePay payment detail', $response );
-			return $response;
-		} catch ( Exception $e ) {
-			// If on the checkout page show the error. 
-			if ( isset( $_REQUEST['gb_checkout_action'] ) && $_REQUEST['gb_checkout_action'] == 'valid_return_from_epay' ) {
-				self::set_message( 'API ERROR: ' . $e->getMessage() , self::MESSAGE_STATUS_ERROR );
+	private function api_capture( $txnid = '', $amount = 0 ) {
+		$epay_params = array();
+		$epay_params["merchantnumber"] = self::$merchant_id;
+		$epay_params["transactionid"] = $txnid;
+		$epay_params["amount"] = $amount;
+		$epay_params["pwd"] = self::$api_password;
+		$epay_params["pbsResponse"] = '-1';
+		$epay_params["epayresponse"] = '-1';
+		error_log( 'params: ' . print_r( $epay_params, TRUE ) );
+		$client = new SoapClient( self::API_URL );
+
+		$result = $client->capture( $epay_params );
+
+		if ( $result->captureResult == TRUE ) {
+			return $result;
+		} 
+		else {
+			if ( $result->epayresponse != "-1" ) {
+				do_action( 'gb_error', __CLASS__ . '::' . __FUNCTION__ . ' - Error', self::getEpayError( $result->epayresponse ) );
 			}
-			do_action( 'gb_error', __CLASS__ . '::' . __FUNCTION__ . ' - attempt fail', $e->getMessage() );
-			return;
+			elseif ( $result->pbsResponse != "-1" ) {
+				do_action( 'gb_error', __CLASS__ . '::' . __FUNCTION__ . ' - Error', self::getPbsError( $result->pbsResponse ) );
+			}
+			else {
+				do_action( 'gb_error', __CLASS__ . '::' . __FUNCTION__ . ' - Unknown Error', $result );
+			}
+			return FALSE;
 		}
 
+	}
+
+	public static function getEpayError( $epay_response_code ) {
+		$epay_params = array();
+		$epay_params["merchantnumber"] = self::$merchant_id;
+		$epay_params["pwd"] = self::$api_password;
+		$epay_params["language"] = apply_filters( 'epay_language', 1 );
+		$epay_params["epayresponsecode"] = $epay_response_code;
+		$epay_params["epayresponse"] = "-1";
+		$client = new SoapClient( self::API_URL );
+		$result = $client->getEpayError( $epay_params );
+
+		if ( $result->getEpayErrorResult == "true" )
+			return $result->epayresponsestring;
+		else
+			return 'An unknown error occured';
+
+	}
+
+	public static function getPbsError( $pbs_response_code ) {
+		$epay_params = array();
+		$epay_params["merchantnumber"] = self::$merchant_id;
+		$epay_params["language"] = apply_filters( 'epay_language', 1 );
+		$epay_params["pbsresponsecode"] = $pbs_response_code;
+		$epay_params["pwd"] = self::$api_password;
+		$epay_params["epayresponse"] = "-1";
+		$client = new SoapClient( self::API_URL );
+		$result = $client->getPbsError( $epay_params );
+
+		if ( $result->getPbsErrorResult == "true" )
+			return $result->pbsresponsestring;
+		else
+			return 'An unknown error occured';
 	}
 
 
@@ -481,28 +448,22 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 		$page = Group_Buying_Payment_Processors::get_settings_page();
 		$section = 'gb_epay_settings';
 		add_settings_section( $section, self::__( 'ePay Payment Options' ), array( $this, 'display_settings_section' ), $page );
-		register_setting( $page, self::ACCOUNT_ID );
-		register_setting( $page, self::IS_DEMO_MODE );
-		register_setting( $page, self::API_USERNAME_OPTION );
+		register_setting( $page, self::MERCHANT_ID_OPTION );
 		register_setting( $page, self::API_PASSWORD_OPTION );
-		register_setting( $page, self::SECRET_WORD );
 
 		register_setting( $page, self::CURRENCY_CODE_OPTION );
-		register_setting( $page, self::RETURN_URL_OPTION );
+		//register_setting( $page, self::ACCEPT_URL_OPTION );
 		register_setting( $page, self::CANCEL_URL_OPTION );
 
-		add_settings_field( self::ACCOUNT_ID, self::__( 'Account ID' ), array( $this, 'display_account_field' ), $page, $section );
-		add_settings_field( self::SECRET_WORD, self::__( 'Account Secret Word' ), array( $this, 'display_app_id_field' ), $page, $section );
-		add_settings_field( self::API_USERNAME_OPTION, self::__( 'API Username' ), array( $this, 'display_api_username_field' ), $page, $section );
+		add_settings_field( self::MERCHANT_ID_OPTION, self::__( 'Merchant Number' ), array( $this, 'display_merchant_id_field' ), $page, $section );
 		add_settings_field( self::API_PASSWORD_OPTION, self::__( 'API Password' ), array( $this, 'display_api_password_field' ), $page, $section );
 		add_settings_field( self::CURRENCY_CODE_OPTION, self::__( 'Currency Code' ), array( $this, 'display_currency_code_field' ), $page, $section );
-		add_settings_field( self::RETURN_URL_OPTION, self::__( 'Return URL' ), array( $this, 'display_return_field' ), $page, $section );
-		add_settings_field( self::IS_DEMO_MODE, self::__( 'Demo Mode' ), array( $this, 'display_api_mode_field' ), $page, $section );
-		//add_settings_field( self::CANCEL_URL_OPTION, self::__( 'Cancel URL' ), array( $this, 'display_cancel_field' ), $page, $section );
+		add_settings_field( self::ACCEPT_URL_OPTION, self::__( 'Return URL' ), array( $this, 'display_return_field' ), $page, $section );
+		add_settings_field( self::CANCEL_URL_OPTION, self::__( 'Cancel URL' ), array( $this, 'display_cancel_field' ), $page, $section );
 	}
 
-	public function display_api_username_field() {
-		echo '<input type="text" name="'.self::API_USERNAME_OPTION.'" value="'.self::$api_username.'" size="80" />';
+	public function display_merchant_id_field() {
+		echo '<input type="text" name="'.self::MERCHANT_ID_OPTION.'" value="'.self::$merchant_id.'" size="80" />';
 		echo '<p class="description">API credentials can be found by following <a href="https://www.epay.com/documentation/api">this documentation</a>.</p>';
 	}
 
@@ -510,51 +471,38 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 		echo '<input type="password" name="'.self::API_PASSWORD_OPTION.'" value="'.self::$api_password.'" size="80" />';
 	}
 
-	public function display_account_field() {
-		echo '<input type="text" name="'.self::ACCOUNT_ID.'" value="'.self::$account_id.'" size="80" />';
-	}
-
-	public function display_app_id_field() {
-		echo '<input type="text" name="'.self::SECRET_WORD.'" value="'.self::$secret_word.'" size="80" />';
-	}
-
 	public function display_return_field() {
-		echo '<input type="text" name="'.self::RETURN_URL_OPTION.'" value="'.self::$return_url.'" size="80" />';
-		echo '<p class="description"><strong>Important:</strong> Set the Direct Return option to "Header Redirect", option available on the Site Management page by clicking the Account tab followed by the Site Management sub-category</p>';
+		echo '<input type="text" name="'.self::ACCEPT_URL_OPTION.'" value="'.self::$accept_url.'" size="80" class="disabled" />';
 	}
 
 	public function display_cancel_field() {
 		echo '<input type="text" name="'.self::CANCEL_URL_OPTION.'" value="'.self::$cancel_url.'" size="80" />';
 	}
 
-	public function display_api_mode_field() {
-		echo '<label><input type="checkbox" name="'.self::IS_DEMO_MODE.'" value="demo" '.checked( 'demo', self::$api_mode, FALSE ).'/> '.self::__( 'Activate Demo Mode' ).'</label><br />';
-	}
-
 	public function display_currency_code_field() {
 		echo '<input type="text" name="'.self::CURRENCY_CODE_OPTION.'" value="'.self::$currency_code.'" size="5" />';
-		echo '<p class="description">ARS, AUD, BRL, GBP, CAD, DKK, EUR, HKD, INR, ILS, JPY, LTL, MYR, MXN, NZD, NOK, PHP, RON, RUB, SGD, ZAR, SEK, CHF, TRY, AED, USD.</p>';
+		echo '<p class="description">http://tech.epay.dk/en/currency-codes</p>';
 	}
 
 	//////////////
 	// Filters //
 	//////////////
 
-	public static function checkout_icon() {
+
+	public static function checkout_icon_todo() {
 		return '<img src="https://www.epay.com/upload/images/paymentlogoshorizontal.png" title="ePay" id="epay_button"/>';
 	}
 
 	public function payment_controls( $controls, Group_Buying_Checkouts $checkout ) {
 		if ( isset( $controls['review'] ) ) {
-			$style = 'style="background-image: url(https://www.epay.com/upload/images/paymentlogoshorizontal.png); background-position: right center; padding: 13px 360px 13px 20px; background-repeat: no-repeat;"';
-			$controls['review'] = str_replace( 'value="'.self::__( 'Review' ).'"', $style . 'value="'.self::__( 'Purchase' ).'"', $controls['review'] );
+			$controls['review'] = str_replace( 'value="'.self::__( 'Review' ).'"', 'value="'.self::__( 'Purchase via ePay' ).'"', $controls['review'] );
 		}
 		return $controls;
 	}
 
 	public function filter_where( $where = '' ) {
 		// posts 90 days old
-		$where .= " AND post_date >= '" . date('Y-m-d', current_time('timestamp')-apply_filters( 'gb_paypal_ap_endingperiod_for_preapproval', 7776000 ) ) . "'";
+		$where .= " AND post_date >= '" . date( 'Y-m-d', current_time( 'timestamp' )-apply_filters( 'gb_paypal_ap_endingperiod_for_preapproval', 7776000 ) ) . "'";
 		return $where;
 	}
 
