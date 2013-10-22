@@ -11,9 +11,9 @@ Text Domain: group-buying
 Domain Path: /lang
 */
 
-add_action( 'gb_register_processors', 'gb_load_epay' );
+define( 'GB_EPAY_URLRESOURCES', plugins_url( 'resources', __FILE__ ) );
 
+add_action( 'gb_register_processors', 'gb_load_epay' );
 function gb_load_epay() {
-	require_once 'lib/class.epaysoap.php';
 	require_once 'classes/ePay_Payments.class.php';
 }

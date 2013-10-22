@@ -121,8 +121,14 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 	 */
 	public function send_offsite( Group_Buying_Checkouts $checkout ) {
 		$cart = $checkout->get_cart();
-		if ( $cart->get_total() < 0.01 ) { // for free deals.
-			return;
+		if ( $cart->get_total( self::get_payment_method() ) < 0.01 ) {
+			// Nothing to do here, another payment handler intercepted and took care of everything
+			// See if we can get that payment and just return it
+			$payments = Group_Buying_Payment::get_payments_for_purchase( $cart->get_id() );
+			foreach ( $payments as $payment_id ) {
+				$payment = Group_Buying_Payment::get_instance( $payment_id );
+				return $payment;
+			}
 		}
 
 		// Don't send someone returning away again.
@@ -132,6 +138,7 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 			if ( $filtered_total < 0.01 ) {
 				return;
 			}
+			$checkout->save_cache_on_redirect( NULL ); // Save cache since it's not being saved via wp_redirect
 
 			$reference_token = substr( md5( serialize( $cart->get_products() ) ) . get_current_user_id(), -18 );
 			self::set_token( $reference_token ); // Set the token so we can reference the purchase later
@@ -142,23 +149,27 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 			}
 			// memo
 			$description = self::__( 'Item(s): ' ) . implode( ', ', $item_array );
-			error_log( 'accept url' . print_r( self::$accept_url, TRUE ) );
-			$args = apply_filters( 'epay_payment_url_args', array(
-					'merchantnumber' => self::$merchant_id,
-					'currency' => self::$currency_code,
-					'windowstate' => 3,
-					'amount' => $filtered_total*100,
-					'orderid' => $reference_token,
-					'language' => apply_filters( 'epay_language', 1 ),
-					'accepturl' => self::$accept_url,
-					'cancelurl' => self::$cancel_url,
-					'ordertext' => urlencode( get_bloginfo( 'name' ) ),
-					'description' => urlencode( $description )
-				), $checkout, $cart );
-
-			$redirect_url = add_query_arg( $args, 'https://ssl.ditonlinebetalingssystem.dk/integration/ewindow/Default.aspx' );
-
-			wp_redirect( $redirect_url, 303 );
+			
+			?>
+				<div id="payment-wrap"></div>
+				<script type="text/javascript">
+					paymentwindow = new PaymentWindow({
+						'merchantnumber': "<?php echo self::$merchant_id ?>",
+						'amount': "<?php echo $filtered_total*100 ?>",
+						'currency': "<?php echo self::$currency_code ?>",
+						'windowstate': "4",
+						'paymentcollection': "1",
+						'orderid': "<?php echo $reference_token ?>",
+						'language': "<?php echo apply_filters( 'epay_language', 1 ) ?>",
+						'accepturl': "<?php echo self::$accept_url ?>",
+						'cancelurl': "<?php echo self::$cancel_url ?>",
+						'ordertext': "<?php echo urlencode( get_bloginfo( 'name' ) ) ?>",
+						'description': "<?php echo urlencode( $description ) ?>"
+					});
+					paymentwindow.append('payment-wrap');
+					paymentwindow.open();
+				</script>
+			<?php
 			exit();
 		}
 	}
@@ -490,12 +501,71 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 
 
 	public static function checkout_icon_todo() {
-		return '<img src="https://www.epay.com/upload/images/paymentlogoshorizontal.png" title="ePay" id="epay_button"/>';
+		return '<img src="'.GB_EPAY_URLRESOURCES.'/dk.gif" title="ePay" id="epay_button"/>';
 	}
 
 	public function payment_controls( $controls, Group_Buying_Checkouts $checkout ) {
 		if ( isset( $controls['review'] ) ) {
-			$controls['review'] = str_replace( 'value="'.self::__( 'Review' ).'"', 'value="'.self::__( 'Purchase via ePay' ).'"', $controls['review'] );
+			ob_start();
+			?>
+				<div id="epay_button"></div>
+				<script charset="UTF-8" src="https://ssl.ditonlinebetalingssystem.dk/integration/ewindow/paymentwindow.js" type="text/javascript"></script>
+				<script type="text/javascript">
+					jQuery(document).ready(function($){
+						var checkout_form = jQuery("#gb_checkout_payment");
+
+						// bind to submittion
+						checkout_form.bind('submit', function (e) {
+
+							// vars
+							var form = $(this);
+							var form_url = checkout_form.attr( 'action' );
+
+							// Prevent loop if already submitted
+							if ( form.data('submitted') !== true ) {
+
+								// Prevent synchronousness submission
+								e.preventDefault();
+
+								// Set to submitted to prevent loop
+								form.data('submitted', true );
+
+								// hide stuff
+								jQuery("#checkout_epay_icon").hide();
+								jQuery('.checkout_block').fadeOut();
+								jQuery('#epay_button').append(gb_ajax_gif);
+								// scroll
+								jQuery('body,html').animate({
+									scrollTop: $("#gb_checkout_payment").offset().top
+								}, 800);
+
+								// send AJAX request
+								jQuery.post(
+									form_url,
+									$(this).serialize(),
+									function( response ) {
+										console.log(response);
+										// If the return a checkout page, then an error occurred.
+										if ( response.indexOf("html") >= 0 ) {
+											form.submit(); // resubmit
+											return false;
+										}
+										else {
+											// Set to submitted to prevent loop
+											$("#epay_button").html( response ).fadeIn(); // Add button
+										}
+									}
+								);
+								return false;
+							}
+						});
+					});
+				</script>
+			<?php
+			$js = ob_get_clean();
+			$controls['review'] = str_replace( 'value="'.self::__( 'Review' ).'"', ' id="checkout_epay_icon" src="'.GB_EPAY_URLRESOURCES.'/epay-blue.jpg" value="'.self::__( 'Mercadopago' ).'"', $controls['review'] );
+			$controls['review'] = str_replace( 'type="submit"', 'type="image"', $controls['review'] );
+			$controls['review'] .= $js;
 		}
 		return $controls;
 	}
