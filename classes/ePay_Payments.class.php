@@ -321,7 +321,6 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 				if ( $items_to_capture ) {
 
 					// Retrieve Payment
-					error_log( 'data' . print_r( $data, TRUE ) );
 					$response = self::api_capture( $data['txnid'], $data['api_response']['amount'] );
 
 					if ( !$response )
@@ -354,12 +353,13 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 		$epay_params["pwd"] = self::$api_password;
 		$epay_params["pbsResponse"] = '-1';
 		$epay_params["epayresponse"] = '-1';
-		error_log( 'params: ' . print_r( $epay_params, TRUE ) );
+		
 		$client = new SoapClient( self::API_URL );
 
 		$result = $client->capture( $epay_params );
 
 		if ( $result->captureResult == TRUE ) {
+			do_action( 'gb_error', __CLASS__ . '::' . __FUNCTION__ . ' - Success', self::getEpayError( $result ) );
 			return $result;
 		} 
 		else {
