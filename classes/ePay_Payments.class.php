@@ -370,7 +370,7 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 		$result = $client->capture( $epay_params );
 
 		if ( $result->captureResult == TRUE ) {
-			do_action( 'gb_error', __CLASS__ . '::' . __FUNCTION__ . ' - Success', self::getEpayError( $result ) );
+			do_action( 'gb_log', __CLASS__ . '::' . __FUNCTION__ . ' - Success', self::getEpayError( $result ) );
 			return $result;
 		} 
 		else {
