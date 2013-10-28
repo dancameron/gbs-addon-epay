@@ -563,7 +563,7 @@ class ePay_Payments extends Group_Buying_Offsite_Processors {
 				</script>
 			<?php
 			$js = ob_get_clean();
-			$controls['review'] = str_replace( 'value="'.self::__( 'Review' ).'"', ' id="checkout_epay_icon" src="'.GB_EPAY_URLRESOURCES.'/epay-blue.jpg" value="'.self::__( 'Mercadopago' ).'"', $controls['review'] );
+			$controls['review'] = str_replace( 'value="'.self::__( 'Review' ).'"', ' id="checkout_epay_icon" src="'.GB_EPAY_URLRESOURCES.'/epay-blue.jpg" value="'.self::__( 'Review' ).'"', $controls['review'] );
 			$controls['review'] = str_replace( 'type="submit"', 'type="image"', $controls['review'] );
 			$controls['review'] .= $js;
 		}
